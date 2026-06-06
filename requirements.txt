@@ -1,0 +1,31 @@
+# Core
+numpy>=1.24
+pillow>=10.0
+opencv-python-headless>=4.8
+
+# PDF
+pymupdf>=1.23
+pdfplumber>=0.10
+
+# OCR (primary)
+paddlepaddle>=2.6
+paddleocr>=2.7
+
+# OCR (fallback / VLM)
+# DeepSeek-OCR runs via transformers when GPU is available.
+# Qwen2.5-VL runs via transformers (use the 3B variant on Colab T4, 7B on A100).
+transformers>=4.45
+accelerate>=0.30
+torch>=2.1
+torchvision>=0.16
+sentencepiece>=0.1.99
+einops>=0.7
+qwen-vl-utils>=0.0.8
+
+# UI
+gradio>=4.40
+
+# Misc
+pydantic>=2.4
+rapidfuzz>=3.6
+tqdm>=4.66
