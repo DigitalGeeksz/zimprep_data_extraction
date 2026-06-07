@@ -31,10 +31,31 @@ class _PaddleBackend:
     def __init__(self, lang: str = "en", use_gpu: bool = False):
         from paddleocr import PaddleOCR
         log.info("Loading PaddleOCR (lang=%s, gpu=%s)", lang, use_gpu)
-        self._ocr = PaddleOCR(use_angle_cls=True, lang=lang, use_gpu=use_gpu, show_log=False)
+        try:
+            # Modern PaddleOCR (v3.0+)
+            device = "gpu" if use_gpu else "cpu"
+            self._ocr = PaddleOCR(
+                use_textline_orientation=True,
+                lang=lang,
+                device=device,
+                enable_mkldnn=False,
+            )
+            self.is_modern = True
+        except (ValueError, TypeError):
+            # Fallback to older PaddleOCR (v2.x)
+            self._ocr = PaddleOCR(
+                use_angle_cls=True,
+                lang=lang,
+                use_gpu=use_gpu,
+                show_log=False,
+            )
+            self.is_modern = False
 
     def run(self, image_path: str) -> _OCRResult:
-        result = self._ocr.ocr(image_path, cls=True)
+        if self.is_modern:
+            result = self._ocr.ocr(image_path)
+        else:
+            result = self._ocr.ocr(image_path, cls=True)
         blocks: List[OCRBlock] = []
         confs: List[float] = []
         if result and result[0]:
