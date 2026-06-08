@@ -1,15 +1,15 @@
 # Core
-numpy>=1.24
+numpy==1.26.4
 pillow>=10.0
-opencv-python-headless>=4.8
+opencv-python-headless==4.8.1.78
 
 # PDF
 pymupdf>=1.23
 pdfplumber>=0.10
 
 # OCR (primary)
-paddlepaddle>=2.6
-paddleocr>=2.7
+paddlepaddle==2.6.2
+paddleocr==2.8.1
 
 # OCR (fallback / VLM)
 # DeepSeek-OCR runs via transformers when GPU is available.

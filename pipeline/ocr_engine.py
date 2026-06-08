@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+import os
+
+# ==============================================================================
+# PADDLEPADDLE 3.X REGRESSION FIX
+# These flags must be set BEFORE 'paddleocr' or 'paddle' is imported.
+# This bypasses the unmapped PIR executor attributes causing CPU crashes.
+# ==============================================================================
+os.environ["FLAGS_enable_new_ir"] = "0"
+os.environ["FLAGS_enable_new_executor"] = "0"
+os.environ["FLAGS_enable_pir_api"] = "0"
+os.environ["FLAGS_enable_pir_in_executor"] = "0"
+os.environ["FLAGS_use_standalone_executor"] = "0"
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -32,7 +45,12 @@ class _PaddleBackend:
         from paddleocr import PaddleOCR
         log.info("Loading PaddleOCR (lang=%s, gpu=%s)", lang, use_gpu)
         try:
-            # Modern PaddleOCR (v3.0+)
+            # FIX (Developer Note): PaddleOCR v3.0+ compatibility updates.
+            # - 'use_gpu' is deprecated/removed in v3.x; use the new 'device' parameter instead.
+            # - 'use_angle_cls' is deprecated; use 'use_textline_orientation' instead.
+            # - 'enable_mkldnn=False' is set to prevent a known PaddlePaddle 3.x CPU regression bug:
+            #   when running on CPU with oneDNN (MKLDNN) enabled, PIR graph execution crashes with:
+            #   ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>].
             device = "gpu" if use_gpu else "cpu"
             self._ocr = PaddleOCR(
                 use_textline_orientation=True,
@@ -42,7 +60,7 @@ class _PaddleBackend:
             )
             self.is_modern = True
         except (ValueError, TypeError):
-            # Fallback to older PaddleOCR (v2.x)
+            # Fallback to older PaddleOCR (v2.x) parameters
             self._ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang=lang,
@@ -52,6 +70,8 @@ class _PaddleBackend:
             self.is_modern = False
 
     def run(self, image_path: str) -> _OCRResult:
+        # FIX (Developer Note): PaddleOCR v3.0+ predict() / ocr() no longer accepts 'cls' parameter.
+        # Orientation correction is set globally during constructor initialization when is_modern is True.
         if self.is_modern:
             result = self._ocr.ocr(image_path)
         else:

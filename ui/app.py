@@ -63,7 +63,9 @@ _VLM: Optional[VLMEngine] = None
 def _get_ocr(use_gpu: bool, enable_fallback: bool) -> OCREngine:
     global _OCR
     with _ENGINE_LOCK:
-        if _OCR is None:
+        # FIX (Developer Note): Recreate the engine if configuration options change.
+        # Otherwise, the cached engine would ignore the GPU and fallback settings toggled in the UI.
+        if _OCR is None or _OCR.use_gpu != use_gpu or _OCR.enable_fallback != enable_fallback:
             _OCR = OCREngine(use_gpu=use_gpu, enable_fallback=enable_fallback)
         return _OCR
 
