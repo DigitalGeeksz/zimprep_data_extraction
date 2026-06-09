@@ -60,8 +60,11 @@ def run_pipeline(
         use_gpu=options.use_gpu,
         enable_fallback=options.use_fallback_ocr,
     )
+    from .pdf_analysis import detect_scanned_diagrams
     for i, page in enumerate(pages):
         engine.run_page(page, force_ocr=options.force_ocr)
+        if page.is_scanned and not page.diagrams:
+            page.diagrams = detect_scanned_diagrams(page, run_id)
         report(
             f"OCR page {page.page_number}/{len(pages)} "
             f"(conf={page.ocr_confidence:.2f}{', fallback' if page.used_fallback else ''}).",

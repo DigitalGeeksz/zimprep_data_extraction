@@ -93,6 +93,8 @@ class SubQuestion:
     confidence: float = 1.0
     page: int = 0
     issues: List[str] = field(default_factory=list)
+    y: Optional[float] = None
+    y_end: Optional[float] = None
 
 
 @dataclass
@@ -108,6 +110,8 @@ class Question:
     page: int = 0
     issues: List[str] = field(default_factory=list)
     approved: Optional[bool] = None
+    y: Optional[float] = None
+    y_end: Optional[float] = None
 
 
 @dataclass

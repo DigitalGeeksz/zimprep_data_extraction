@@ -45,10 +45,38 @@ log = get_logger("zimprep.recon")
 # --- Regex bank -------------------------------------------------------------
 
 # A line that starts a new top-level question.
+# Group 1: optional prefix "Question "
+# Group 2: digits, word number, or Roman numeral
+# Group 3: optional trailing punctuation . ) :
 RE_Q_MAIN = re.compile(
-    r"^\s*(?:Question\s+)?(\d{1,2})\s*[\.\)\:]\s*(.*)$",
+    r"^\s*(Question\s+)?(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|i{1,3}|iv|v|vi{0,3}|ix|x|xi{1,3}|xiv|xv|xvi{0,3}|xix|xx)\b\s*([\.\)\:])?\s*(.*)$",
     re.IGNORECASE,
 )
+
+WORD_TO_DIGIT = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20
+}
+
+ROMAN_TO_DIGIT = {
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10,
+    "xi": 11, "xii": 12, "xiii": 13, "xiv": 14, "xv": 15,
+    "xvi": 16, "xvii": 17, "xviii": 18, "xix": 19, "xx": 20
+}
+
+def _parse_question_number(val: str) -> Optional[int]:
+    val = val.strip().lower()
+    if val.isdigit():
+        return int(val)
+    if val in WORD_TO_DIGIT:
+        return WORD_TO_DIGIT[val]
+    if val in ROMAN_TO_DIGIT:
+        return ROMAN_TO_DIGIT[val]
+    return None
+
 
 # First-level subpart: (a), a), a.
 RE_Q_LETTER = re.compile(
@@ -96,8 +124,8 @@ class _RState:
     current_roman: Optional[SubQuestion] = None  # level 2 (roman)
     last_target: Optional[object] = None  # last container we appended text to
 
-    def open_question(self, number: int, page: int) -> Question:
-        q = Question(question_number=number, page=page)
+    def open_question(self, number: int, page: int, y: Optional[float] = None) -> Question:
+        q = Question(question_number=number, page=page, y=y, y_end=y)
         self.questions.append(q)
         self.current_q = q
         self.current_sub = None
@@ -105,17 +133,17 @@ class _RState:
         self.last_target = q
         return q
 
-    def open_subpart(self, label: str, page: int) -> Optional[SubQuestion]:
+    def open_subpart(self, label: str, page: int, y: Optional[float] = None) -> Optional[SubQuestion]:
         if self.current_q is None:
             return None
-        sub = SubQuestion(label=label.lower(), level=1, page=page)
+        sub = SubQuestion(label=label.lower(), level=1, page=page, y=y, y_end=y)
         self.current_q.subquestions.append(sub)
         self.current_sub = sub
         self.current_roman = None
         self.last_target = sub
         return sub
 
-    def open_roman(self, label: str, page: int) -> Optional[SubQuestion]:
+    def open_roman(self, label: str, page: int, y: Optional[float] = None) -> Optional[SubQuestion]:
         host = self.current_sub or (
             self.current_q.subquestions[-1] if self.current_q and self.current_q.subquestions else None
         )
@@ -123,20 +151,20 @@ class _RState:
             if self.current_q is None:
                 return None
             # Promote a synthetic letter-level container so romans nest correctly.
-            host = self.open_subpart("a", page)
+            host = self.open_subpart("a", page, y=y)
             if host is None:
                 return None
-        rom = SubQuestion(label=label.lower(), level=2, page=page)
+        rom = SubQuestion(label=label.lower(), level=2, page=page, y=y, y_end=y)
         host.subquestions.append(rom)
         self.current_roman = rom
         self.last_target = rom
         return rom
 
-    def append_mcq_option(self, letter: str, text: str, page: int):
+    def append_mcq_option(self, letter: str, text: str, page: int, y: Optional[float] = None):
         if self.current_q is None:
             return
         self.current_q.question_type = "mcq"
-        opt = SubQuestion(label=letter.upper(), level=3, text=text, question_type="mcq_option", page=page)
+        opt = SubQuestion(label=letter.upper(), level=3, text=text, question_type="mcq_option", page=page, y=y, y_end=y)
         self.current_q.subquestions.append(opt)
         self.last_target = opt
 
@@ -152,6 +180,10 @@ class _RState:
                 self.last_target.text = f"{self.last_target.text} {text}".strip()
             else:
                 self.last_target.text = text.strip()
+
+    def update_target_end_y(self, y_end: float):
+        if self.last_target is not None and hasattr(self.last_target, "y_end"):
+            self.last_target.y_end = y_end
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -220,34 +252,41 @@ def _associate_diagrams(
     questions: List[Question],
     diagrams: List[DiagramRegion],
 ):
-    """Attach each diagram to the closest preceding question/subpart on its page."""
+    """Attach each diagram to the closest preceding question/subpart on its page, with a previous page fallback."""
     if not diagrams or not questions:
         return
 
     # Flatten question + subquestion anchors with (page, y, ref).
     anchors: List[Tuple[int, float, object]] = []
     for q in questions:
-        anchors.append((q.page or 0, 0.0, q))
+        qy = q.y if q.y is not None else 0.0
+        anchors.append((q.page or 0, qy, q))
         for sub in q.subquestions:
-            anchors.append((sub.page or q.page, 0.0, sub))
+            suby = sub.y if sub.y is not None else qy
+            anchors.append((sub.page or q.page, suby, sub))
             for rom in sub.subquestions:
-                anchors.append((rom.page or sub.page, 0.0, rom))
+                romy = rom.y if rom.y is not None else suby
+                anchors.append((rom.page or sub.page, romy, rom))
 
     for d in diagrams:
-        best = None
-        best_dist = float("inf")
+        best_same_page = None
+        best_same_page_dist = float("inf")
+        last_prev_page_anchor = None
+        
+        dy = d.bbox[1]  # top Y coordinate of the diagram
+        
         for (apage, ay, anchor) in anchors:
-            if apage != d.page:
-                # allow a diagram on the page just after its question
-                if apage + 1 == d.page:
-                    dist = 10_000  # weak preference
-                else:
-                    continue
-            else:
-                dist = abs(d.bbox[1] - ay)
-            if dist < best_dist:
-                best_dist = dist
-                best = anchor
+            if apage == d.page:
+                if ay <= dy:
+                    dist = dy - ay
+                    if dist < best_same_page_dist:
+                        best_same_page_dist = dist
+                        best_same_page = anchor
+            elif apage < d.page:
+                last_prev_page_anchor = anchor
+                
+        best = best_same_page if best_same_page is not None else last_prev_page_anchor
+        
         if best is None:
             continue
         best.has_image = True
@@ -307,10 +346,13 @@ def _process_page(state: _RState, page: PageData):
     lines = _group_blocks_to_lines(blocks)
     saw_main_on_page = False
 
-    for line_text, line_conf in lines:
+    for line_text, line_conf, line_bbox in lines:
         text = line_text.strip()
         if not text or RE_PAGE_FOOTER.match(text):
             continue
+
+        y = line_bbox[1]
+        y_end = line_bbox[3]
 
         # Instruction / header lines: stash but don't break the FSM.
         if RE_INSTRUCTION.match(text) and state.current_q is None:
@@ -322,34 +364,68 @@ def _process_page(state: _RState, page: PageData):
         # 1. Main question?
         m = RE_Q_MAIN.match(text_no_marks)
         if m and not _looks_like_subpart_only(text_no_marks):
-            num = safe_int(m.group(1))
-            stem = m.group(2).strip()
-            if num is not None and _is_plausible_question_number(state, num):
-                q = state.open_question(num, page.page_number)
-                q.confidence = line_conf
-                if stem:
-                    state.append_text(stem)
-                _assign_marks(q, marks)
-                saw_main_on_page = True
-                continue
+            prefix = m.group(1)
+            raw_num = m.group(2)
+            punct = m.group(3)
+            stem = m.group(4).strip()
+            
+            is_digit = raw_num.isdigit()
+            has_prefix = bool(prefix)
+            has_punct = bool(punct)
+            
+            is_roman = raw_num.lower() in ROMAN_TO_DIGIT
+            is_word = raw_num.lower() in WORD_TO_DIGIT
+            
+            # Format requirements:
+            # - If it's a digit, optional prefix, optional punctuation.
+            # - If it's a word, we require either prefix (e.g. "Question One") or punctuation (e.g. "One.")
+            # - If it's a roman numeral, we strictly require the prefix (e.g. "Question I") to prevent matching subparts.
+            is_valid_format = False
+            if is_digit:
+                is_valid_format = True
+            elif is_word:
+                if has_prefix or has_punct:
+                    is_valid_format = True
+            elif is_roman:
+                if has_prefix:
+                    is_valid_format = True
+            
+            # Reject table/matrix rows or purely numeric/symbolic noise:
+            # If the stem is not empty, it must contain at least one alphabetical letter.
+            if is_valid_format and stem:
+                if not any(char.isalpha() for char in stem):
+                    is_valid_format = False
+            
+            if is_valid_format:
+                num = _parse_question_number(raw_num)
+                if num is not None and _is_plausible_question_number(state, num):
+                    q = state.open_question(num, page.page_number, y=y)
+                    q.confidence = line_conf
+                    if stem:
+                        state.append_text(stem)
+                        state.update_target_end_y(y_end)
+                    _assign_marks(q, marks)
+                    saw_main_on_page = True
+                    continue
 
         # 2. Roman subpart? Must check BEFORE letter regex.
         m = RE_Q_ROMAN.match(text_no_marks)
         if m and _is_probable_roman(m.group(1)):
             label = m.group(1)
             rest = m.group(2).strip()
-            rom = state.open_roman(label, page.page_number)
+            rom = state.open_roman(label, page.page_number, y=y)
             if rom is not None:
                 rom.confidence = line_conf
                 if rest:
                     state.append_text(rest)
+                    state.update_target_end_y(y_end)
                 _assign_marks(rom, marks)
                 continue
 
         # 3. MCQ option? Only when current question is or could be MCQ.
         m = RE_MCQ_OPT.match(text_no_marks)
         if m and _looks_like_mcq_context(state):
-            state.append_mcq_option(m.group(1), m.group(2).strip(), page.page_number)
+            state.append_mcq_option(m.group(1), m.group(2).strip(), page.page_number, y=y)
             continue
 
         # 4. Letter subpart?
@@ -357,16 +433,18 @@ def _process_page(state: _RState, page: PageData):
         if m and _looks_like_letter_subpart(text_no_marks):
             label = m.group(1)
             rest = m.group(2).strip()
-            sub = state.open_subpart(label, page.page_number)
+            sub = state.open_subpart(label, page.page_number, y=y)
             if sub is not None:
                 sub.confidence = line_conf
                 if rest:
                     state.append_text(rest)
+                    state.update_target_end_y(y_end)
                 _assign_marks(sub, marks)
                 continue
 
         # 5. Continuation text for whatever is open.
         state.append_text(text_no_marks)
+        state.update_target_end_y(y_end)
         # If the line had marks, assume they belong to the current target.
         _assign_marks(state.last_target, marks)
 
@@ -375,7 +453,7 @@ def _process_page(state: _RState, page: PageData):
         pass
 
 
-def _group_blocks_to_lines(blocks: Sequence[OCRBlock]) -> List[Tuple[str, float]]:
+def _group_blocks_to_lines(blocks: Sequence[OCRBlock]) -> List[Tuple[str, float, Tuple[float, float, float, float]]]:
     """Cluster blocks whose y-centres are within a tolerance into single lines."""
     if not blocks:
         return []
@@ -393,12 +471,16 @@ def _group_blocks_to_lines(blocks: Sequence[OCRBlock]) -> List[Tuple[str, float]
                 break
         if not placed:
             lines.append([b])
-    out: List[Tuple[str, float]] = []
+    out: List[Tuple[str, float, Tuple[float, float, float, float]]] = []
     for ln in lines:
         ln.sort(key=lambda x: x.x)
         text = " ".join(b.text for b in ln).strip()
         conf = float(sum(b.confidence for b in ln) / len(ln))
-        out.append((text, conf))
+        x0 = min(b.bbox[0] for b in ln)
+        y0 = min(b.bbox[1] for b in ln)
+        x1 = max(b.bbox[2] for b in ln)
+        y1 = max(b.bbox[3] for b in ln)
+        out.append((text, conf, (x0, y0, x1, y1)))
     return out
 
 
@@ -423,10 +505,12 @@ def _looks_like_subpart_only(text: str) -> bool:
     stripped = text.strip().lower()
     if stripped.startswith(("question ", "question\t")):
         return False
-    # If the number is followed by units or non-dot punctuation, it's body text.
-    m = re.match(r"^\s*(\d{1,2})\s*([^\.\)\:])", text)
-    if m and m.group(2).lower() in ("g", "n", "m", "k", "c", "%", "v", "a"):
-        return True
+    # If the number is followed by units (e.g. 5 N, 3cm) as a standalone word/abbreviation, it's body text.
+    m = re.match(r"^\s*(\d{1,2})\s*([a-zA-Z%]+)\b", text)
+    if m:
+        unit = m.group(2).lower()
+        if unit in {"g", "n", "m", "k", "c", "%", "v", "a", "cm", "kg", "rad", "deg", "sec", "min"}:
+            return True
     return False
 
 
